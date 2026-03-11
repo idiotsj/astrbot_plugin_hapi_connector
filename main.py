@@ -260,6 +260,9 @@ class HapiConnectorPlugin(Star):
                 async def q_waiter(controller: SessionController, ev: AstrMessageEvent,
                                    _opts=opts, _collected=collected, _state={'other': False}):
                     reply = ev.message_str.strip()
+                    if not reply:
+                        controller.keep(timeout=60, reset_timeout=True)
+                        return
                     if _state['other']:
                         _collected.append(reply)
                         controller.stop()
@@ -559,6 +562,9 @@ class HapiConnectorPlugin(Star):
             @session_waiter(timeout=30, record_history_chains=False)
             async def perm_waiter(controller: SessionController, ev: AstrMessageEvent):
                 reply = ev.message_str.strip()
+                if not reply:
+                    controller.keep(timeout=30, reset_timeout=True)
+                    return
                 target = reply
                 if reply.isdigit() and 1 <= int(reply) <= len(modes):
                     target = modes[int(reply) - 1]
@@ -615,6 +621,9 @@ class HapiConnectorPlugin(Star):
             @session_waiter(timeout=30, record_history_chains=False)
             async def model_waiter(controller: SessionController, ev: AstrMessageEvent):
                 reply = ev.message_str.strip()
+                if not reply:
+                    controller.keep(timeout=30, reset_timeout=True)
+                    return
                 target = reply
                 if reply.isdigit() and 1 <= int(reply) <= len(MODEL_MODES):
                     target = MODEL_MODES[int(reply) - 1]
@@ -674,6 +683,9 @@ class HapiConnectorPlugin(Star):
             @session_waiter(timeout=30, record_history_chains=False)
             async def output_waiter(controller: SessionController, ev: AstrMessageEvent):
                 reply = ev.message_str.strip()
+                if not reply:
+                    controller.keep(timeout=30, reset_timeout=True)
+                    return
                 t = reply
                 if reply.isdigit() and 1 <= int(reply) <= len(levels):
                     t = levels[int(reply) - 1]
@@ -886,6 +898,9 @@ class HapiConnectorPlugin(Star):
         @session_waiter(timeout=120, record_history_chains=False)
         async def create_waiter(controller: SessionController, ev: AstrMessageEvent):
             raw = ev.message_str.strip()
+            if not raw:
+                controller.keep(timeout=120, reset_timeout=True)
+                return
             r = wiz.process(raw)
 
             # 需要拉 recent_paths 再显示步骤 2
@@ -994,7 +1009,11 @@ class HapiConnectorPlugin(Star):
 
         @session_waiter(timeout=30, record_history_chains=False)
         async def archive_waiter(controller: SessionController, ev: AstrMessageEvent):
-            if ev.message_str.strip().lower() == "y":
+            reply = ev.message_str.strip()
+            if not reply:
+                controller.keep(timeout=30, reset_timeout=True)
+                return
+            if reply.lower() == "y":
                 ok, msg = await session_ops.archive_session(self.client, sid)
                 await ev.send(ev.plain_result(msg))
                 if ok:
@@ -1028,12 +1047,12 @@ class HapiConnectorPlugin(Star):
         async def rename_waiter(controller: SessionController, ev: AstrMessageEvent):
             new_name = ev.message_str.strip()
             if not new_name:
-                await ev.send(ev.plain_result("名称不能为空，已取消"))
-            else:
-                ok, msg = await session_ops.rename_session(self.client, sid, new_name)
-                await ev.send(ev.plain_result(msg))
-                if ok:
-                    await self._refresh_sessions()
+                controller.keep(timeout=60, reset_timeout=True)
+                return
+            ok, msg = await session_ops.rename_session(self.client, sid, new_name)
+            await ev.send(ev.plain_result(msg))
+            if ok:
+                await self._refresh_sessions()
             controller.stop()
 
         try:
@@ -1070,7 +1089,11 @@ class HapiConnectorPlugin(Star):
 
         @session_waiter(timeout=30, record_history_chains=False)
         async def delete_waiter(controller: SessionController, ev: AstrMessageEvent):
-            if ev.message_str.strip() == "delete":
+            reply = ev.message_str.strip()
+            if not reply:
+                controller.keep(timeout=30, reset_timeout=True)
+                return
+            if reply == "delete":
                 if is_active:
                     ok_arc, msg_arc = await session_ops.archive_session(self.client, sid)
                     if not ok_arc:
@@ -1130,7 +1153,11 @@ class HapiConnectorPlugin(Star):
 
         @session_waiter(timeout=30, record_history_chains=False)
         async def clean_waiter(controller: SessionController, ev: AstrMessageEvent):
-            if ev.message_str.strip().lower() == "yes":
+            reply = ev.message_str.strip()
+            if not reply:
+                controller.keep(timeout=30, reset_timeout=True)
+                return
+            if reply.lower() == "yes":
                 success = 0
                 for s in targets:
                     ok, _ = await session_ops.delete_session(self.client, s["id"])
@@ -1344,4 +1371,161 @@ class HapiConnectorPlugin(Star):
         await self._set_user_state(event)
         yield event.plain_result(msg)
         event.stop_event()
+
+    # ──── LLM tools (optional) ────
+
+    def _llm_tool_enabled(self) -> bool:
+        return bool(self.config.get("llm_tool_enable", False))
+
+    def _llm_tool_guard(self, event: AstrMessageEvent) -> str | None:
+        if not self._llm_tool_enabled():
+            return "LLM 工具已禁用，请在插件配置中开启 llm_tool_enable"
+        if not self._is_admin(event):
+            return "无权限：仅管理员可调用该工具"
+        return None
+
+    @filter.llm_tool(name="hapi_list_sessions")
+    async def llm_list_sessions(self, event: AstrMessageEvent):
+        """列出 HAPI sessions。"""
+        if err := self._llm_tool_guard(event):
+            yield event.plain_result(err)
+            return
+        await self._refresh_sessions()
+        if not self.sessions_cache:
+            yield event.plain_result("没有可用的 session")
+            return
+        text = formatters.format_session_list(self.sessions_cache, self._current_sid(event))
+        yield event.plain_result(text)
+
+    @filter.llm_tool(name="hapi_list_machines")
+    async def llm_list_machines(self, event: AstrMessageEvent):
+        """列出在线机器列表。"""
+        if err := self._llm_tool_guard(event):
+            yield event.plain_result(err)
+            return
+        try:
+            machines = await session_ops.fetch_machines(self.client)
+        except Exception as e:
+            yield event.plain_result(f"获取机器列表失败: {e}")
+            return
+        if not machines:
+            yield event.plain_result("没有在线的机器")
+            return
+        lines = []
+        for i, m in enumerate(machines, 1):
+            meta = m.get("metadata", {})
+            host = meta.get("host", "unknown")
+            plat = meta.get("platform", "?")
+            lines.append(f"[{i}] {host} ({plat}) id={m.get('id')}")
+        yield event.plain_result("\n".join(lines))
+
+    @filter.llm_tool(name="hapi_switch_session")
+    async def llm_switch_session(self, event: AstrMessageEvent, target: str):
+        """切换当前 session（序号或 ID 前缀）。"""
+        if err := self._llm_tool_guard(event):
+            yield event.plain_result(err)
+            return
+        await self._refresh_sessions()
+        sid = None
+        if target and target.isdigit():
+            idx = int(target)
+            if 1 <= idx <= len(self.sessions_cache):
+                sid = self.sessions_cache[idx - 1]["id"]
+        if sid is None:
+            matches = [s for s in self.sessions_cache if s.get("id", "").startswith(target)]
+            if len(matches) == 1:
+                sid = matches[0]["id"]
+            elif len(matches) > 1:
+                labels = [f"  {s['id'][:8]}..." for s in matches]
+                yield event.plain_result(
+                    f"匹配到 {len(matches)} 个 session，请更精确:\n" + "\n".join(labels)
+                )
+                return
+        if sid is None:
+            yield event.plain_result("未找到匹配的 session")
+            return
+        detail = await session_ops.fetch_session_detail(self.client, sid)
+        flavor = detail.get("metadata", {}).get("flavor", "claude")
+        summary = detail.get("summary", "")
+        await self._set_user_state(event, current_session=sid, current_flavor=flavor)
+        yield event.plain_result(f"已切换到 [{flavor}] {sid[:8]}... {summary}")
+
+    @filter.llm_tool(name="hapi_send_message")
+    async def llm_send_message(self, event: AstrMessageEvent, text: str, session: str = ""):
+        """发送消息到指定 session（默认当前 session）。"""
+        if err := self._llm_tool_guard(event):
+            yield event.plain_result(err)
+            return
+        if not text:
+            yield event.plain_result("消息内容不能为空")
+            return
+        await self._refresh_sessions()
+        sid = self._current_sid(event)
+        if session:
+            if session.isdigit():
+                idx = int(session)
+                if 1 <= idx <= len(self.sessions_cache):
+                    sid = self.sessions_cache[idx - 1]["id"]
+            else:
+                matches = [s for s in self.sessions_cache if s.get("id", "").startswith(session)]
+                if len(matches) == 1:
+                    sid = matches[0]["id"]
+        if not sid:
+            yield event.plain_result("请先选择 session 或传入 session 参数")
+            return
+        ok, msg = await session_ops.send_message(self.client, sid, text)
+        await self._set_user_state(event)
+        yield event.plain_result(msg if ok else f"发送失败: {msg}")
+
+    @filter.llm_tool(name="hapi_create_session")
+    async def llm_create_session(
+        self,
+        event: AstrMessageEvent,
+        machine: str,
+        directory: str,
+        agent: str = "codex",
+        session_type: str = "simple",
+        yolo: bool = False,
+        worktree_name: str = "",
+    ):
+        """创建 session（无需交互）。"""
+        if err := self._llm_tool_guard(event):
+            yield event.plain_result(err)
+            return
+        if not machine or not directory:
+            yield event.plain_result("machine 和 directory 为必填参数")
+            return
+        try:
+            machines = await session_ops.fetch_machines(self.client)
+        except Exception as e:
+            yield event.plain_result(f"获取机器列表失败: {e}")
+            return
+        machine_id = None
+        if machine.isdigit():
+            idx = int(machine)
+            if 1 <= idx <= len(machines):
+                machine_id = machines[idx - 1]["id"]
+        if machine_id is None:
+            for m in machines:
+                if m.get("id") == machine or str(m.get("id", "")).startswith(machine):
+                    machine_id = m.get("id")
+                    break
+        if not machine_id:
+            yield event.plain_result("未找到匹配的 machine，请先调用 hapi_list_machines")
+            return
+
+        ok, msg, new_sid = await session_ops.spawn_session(
+            self.client,
+            machine_id=machine_id,
+            directory=directory,
+            agent=agent,
+            session_type=session_type,
+            yolo=yolo,
+            worktree_name=worktree_name,
+        )
+        await self._refresh_sessions()
+        if ok and new_sid:
+            await self._set_user_state(event, current_session=new_sid, current_flavor=agent)
+            msg += f"\n已自动切换到该 session [{agent}] {new_sid[:8]}..."
+        yield event.plain_result(msg)
 

@@ -95,6 +95,12 @@
     "type": "string",
     "default": "07:00",
     "hint": "例如开始 22:00、结束 08:00，即晚上10点到次日早上8点，支持跨午夜"
+  },
+  "llm_tool_enable": {
+    "description": "启用 LLM 工具调用（仅管理员，默认关闭）",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后，LLM 可直接调用 hapi 相关工具，如创建会话、列出会话、发送消息等"
   }
 }
 

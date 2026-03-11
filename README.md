@@ -122,6 +122,20 @@ hapi codex    # Open Codex
 | `auto_approve_start` | 忙时托管审批开始时间（HH:MM，24小时制） | `23:00` |
 | `auto_approve_end` | 忙时托管审批结束时间（HH:MM，24小时制，支持跨午夜） | `07:00` |
 
+### LLM 工具调用（可选）
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `llm_tool_enable` | 启用 LLM 工具调用（仅管理员，默认关闭） | 关闭 |
+
+启用后，LLM 可调用以下工具：
+
+- `hapi_list_sessions`
+- `hapi_list_machines`
+- `hapi_switch_session`
+- `hapi_send_message`
+- `hapi_create_session`
+
 ---
 
 ## ⌨️ 指令大全
